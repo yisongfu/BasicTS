@@ -1,59 +1,59 @@
 import os
 import sys
-import numpy as np
+import torch
 from easydict import EasyDict
-
 sys.path.append(os.path.abspath(__file__ + '/../../..'))
 
-from basicts.metrics import masked_mae, masked_mape, masked_rmse, masked_huber
+from basicts.metrics import masked_mae, masked_mape, masked_rmse
 from basicts.data import TimeSeriesForecastingDataset
+from basicts.runners import SimpleTimeSeriesForecastingRunner
 from basicts.scaler import ZScoreScaler
-from basicts.utils import get_regular_settings
+from basicts.utils import get_regular_settings, load_adj
 
-from .arch import HimNet
-from .runner import HimNetRunner
+from .arch import DFDGCN
 
 ############################## Hot Parameters ##############################
 # Dataset & Metrics configuration
 DATA_NAME = 'METR-LA'  # Dataset name
 regular_settings = get_regular_settings(DATA_NAME)
-INPUT_LEN = 12  # Length of input sequence
-OUTPUT_LEN = 12  # Length of output sequence
+INPUT_LEN = regular_settings['INPUT_LEN']  # Length of input sequence
+OUTPUT_LEN = regular_settings['OUTPUT_LEN']  # Length of output sequence
 TRAIN_VAL_TEST_RATIO = regular_settings['TRAIN_VAL_TEST_RATIO']  # Train/Validation/Test split ratios
 NORM_EACH_CHANNEL = regular_settings['NORM_EACH_CHANNEL'] # Whether to normalize each channel of the data
 RESCALE = regular_settings['RESCALE'] # Whether to rescale the data
 NULL_VAL = regular_settings['NULL_VAL'] # Null value in the data
 # Model architecture and parameters
-MODEL_ARCH = HimNet
-HIMNET_CONFIG = {
-  'lr': 0.001,
-  'eps': 0.001,
-  'weight_decay': 0.0005,
-  'milestones': [30, 40],
-  'clip_grad': 5,
-  'batch_size': 16,
-  'max_epochs': 200,
-  'early_stop': 20
-}
-
-NUM_EPOCHS = HIMNET_CONFIG['max_epochs']
-
+MODEL_ARCH = DFDGCN
+adj_mx, _ = load_adj("datasets/" + DATA_NAME +
+                     "/adj_mx.pkl", "doubletransition")
 MODEL_PARAM = {
-    'num_nodes': 207,
-    'input_dim': 3,
-    'output_dim': 1,
-    'out_steps': 12,
-    'hidden_dim': 64,
-    'num_layers': 1,
-    'cheb_k': 2,
-    'ycov_dim': 2,
-    'tod_embedding_dim': 8,
-    'dow_embedding_dim': 8,
-    'node_embedding_dim': 16,
-    'st_embedding_dim': 16,
-    'tf_decay_steps': 6000,
-    'use_teacher_forcing': True
+    "num_nodes": 207,
+    "supports": [torch.tensor(i) for i in adj_mx],
+    "dropout": 0.3,
+    "gcn_bool": True,
+    "addaptadj": True,
+    "aptinit": None,
+    "in_dim": 2,
+    "out_dim": 12,
+    "residual_channels": 32,
+    "dilation_channels": 32,
+    "skip_channels": 256,
+    "end_channels": 512,
+    "kernel_size": 2,
+    "blocks": 4,
+    "layers": 2,
+    'a': 1,
+    'seq_len': INPUT_LEN,
+    'affine': True,
+    'fft_emb': 10,
+    'identity_emb': 10,
+    'hidden_emb': 30,
+    'subgraph': 20,
+    "time_of_day_size": 288,
+    "day_of_week_size": 7
+    
 }
+NUM_EPOCHS = 100
 
 ############################## General Configuration ##############################
 CFG = EasyDict()
@@ -61,8 +61,7 @@ CFG = EasyDict()
 CFG.DESCRIPTION = 'An Example Config'
 CFG.GPU_NUM = 1 # Number of GPUs to use (0 for CPU mode)
 # Runner
-CFG.RUNNER = HimNetRunner
-
+CFG.RUNNER = SimpleTimeSeriesForecastingRunner
 
 ############################## Dataset Configuration ##############################
 CFG.DATASET = EasyDict()
@@ -96,7 +95,6 @@ CFG.MODEL.ARCH = MODEL_ARCH
 CFG.MODEL.PARAM = MODEL_PARAM
 CFG.MODEL.FORWARD_FEATURES = [0, 1, 2]
 CFG.MODEL.TARGET_FEATURES = [0]
-CFG.MODEL.SETUP_GRAPH = False
 
 ############################## Metrics Configuration ##############################
 
@@ -123,27 +121,23 @@ CFG.TRAIN.LOSS = masked_mae
 CFG.TRAIN.OPTIM = EasyDict()
 CFG.TRAIN.OPTIM.TYPE = "Adam"
 CFG.TRAIN.OPTIM.PARAM = {
-    "lr":max(HIMNET_CONFIG['lr']*CFG.GPU_NUM, HIMNET_CONFIG['lr']),
-    "eps":HIMNET_CONFIG['eps'],
-    "weight_decay":HIMNET_CONFIG['weight_decay'],
+    "lr": 0.002,
+    "weight_decay": 0.0001,
 }
 # Learning rate scheduler settings
 CFG.TRAIN.LR_SCHEDULER = EasyDict()
 CFG.TRAIN.LR_SCHEDULER.TYPE = "MultiStepLR"
 CFG.TRAIN.LR_SCHEDULER.PARAM = {
-    'milestones': HIMNET_CONFIG['milestones'],
-    'gamma': HIMNET_CONFIG.get('lr_decay_rate', 0.1),
-    'verbose': False
+    "milestones": [1, 50],
+    "gamma": 0.5
 }
 # Train data loader settings
 CFG.TRAIN.DATA = EasyDict()
-CFG.TRAIN.DATA.BATCH_SIZE = HIMNET_CONFIG['batch_size']
+CFG.TRAIN.DATA.BATCH_SIZE = 16
 CFG.TRAIN.DATA.SHUFFLE = True
-
-CFG.TRAIN.EARLY_STOPPING_PATIENCE = HIMNET_CONFIG['early_stop']
-
+# Gradient clipping settings
 CFG.TRAIN.CLIP_GRAD_PARAM = {
-    'max_norm': HIMNET_CONFIG.get('clip_grad', 5)  
+    "max_norm": 5.0
 }
 
 ############################## Validation Configuration ##############################
